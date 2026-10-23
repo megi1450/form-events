@@ -9,7 +9,33 @@ const apiReady=()=>Boolean(API_URL&&/^https:\/\//i.test(API_URL)&&/\/exec(?:$|\?
 const backendHelp="Backend setup is not finished yet. Follow the README: deploy apps-script/Code.gs, then add its /exec URL to config.js and commit the change.";
 function toast(msg,type=""){const el=$("#toast");el.textContent=msg;el.className="toast"+(type?" "+type:"");clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.classList.add("hidden"),3600);}
 function jsonp(action,params={}){return new Promise((resolve,reject)=>{if(!apiReady())return reject(new Error(backendHelp));const cb="__fe_cb_"+(++state.requestSeq)+"_"+Math.floor(Math.random()*100000),script=document.createElement("script"),url=new URL(API_URL);url.searchParams.set("action",action);url.searchParams.set("callback",cb);url.searchParams.set("_",Date.now());Object.entries(params).forEach(([k,v])=>url.searchParams.set(k,String(v)));const timer=setTimeout(()=>{cleanup();reject(new Error("The backend did not respond. Check the Apps Script URL and access setting."));},18000);function cleanup(){clearTimeout(timer);delete window[cb];script.remove();}window[cb]=data=>{cleanup();if(data?.ok===false)reject(new Error(data.error||"Request failed."));else resolve(data);};script.onerror=()=>{cleanup();reject(new Error("Could not reach the backend. Check the Web App URL and deployment."));};script.src=url.toString();document.head.appendChild(script);});}
-function postBackend(payload){return new Promise((resolve,reject)=>{if(!apiReady())return reject(new Error(backendHelp));const requestId="fe_"+Date.now()+"_"+(++state.requestSeq),iframe=document.createElement("iframe");iframe.name="frame_"+requestId;iframe.id=iframe.name;iframe.hidden=true;iframe.title="Form response";const form=document.createElement("form");form.method="POST";form.action=API_URL;form.target=iframe.name;form.hidden=true;const input=document.createElement("input");input.type="hidden";input.name="payload";input.value=JSON.stringify({...payload,requestId});form.appendChild(input);document.body.append(iframe,form);let done=false;const cleanup=()=>{window.removeEventListener("message",onMessage);clearTimeout(timer);form.remove();iframe.remove();};const finish=(fn,val)=>{if(done)return;done=true;cleanup();fn(val);};const onMessage=ev=>{const d=ev.data;if(!d||d.source!=="form-events-backend"||d.requestId!==requestId)return;if(d.data?.ok===false)finish(reject,new Error(d.data.error||"Request failed."));else finish(resolve,d.data);};window.addEventListener("message",onMessage);const timer=setTimeout(()=>finish(reject,new Error("No confirmation received from the backend. Check deployment URL and Apps Script logs.")),25000);form.submit();});}
+async function postBackend(payload){
+ if(!apiReady())throw new Error(backendHelp);
+ const randomBytes=new Uint8Array(18);
+ if(!window.crypto?.getRandomValues)throw new Error("Secure request confirmation is unavailable in this browser.");
+ window.crypto.getRandomValues(randomBytes);
+ const nonce=Array.from(randomBytes,b=>b.toString(16).padStart(2,"0")).join("");
+ const requestId="fe_"+Date.now()+"_"+nonce;
+ const body=new URLSearchParams({payload:JSON.stringify({...payload,requestId})});
+ let queued=false;
+ try{if(navigator.sendBeacon)queued=navigator.sendBeacon(API_URL,body);}catch(_){}
+ if(!queued){
+  try{await fetch(API_URL,{method:"POST",mode:"no-cors",credentials:"omit",cache:"no-store",keepalive:true,body});queued=true;}
+  catch(_){throw new Error("Could not send the request to Apps Script. Check the Web App URL and access settings.");}
+ }
+ const deadline=Date.now()+30000;
+ while(Date.now()<deadline){
+  await new Promise(resolve=>setTimeout(resolve,650));
+  let status;
+  try{status=await jsonp("getRequestStatus",{requestId});}catch(_){continue;}
+  if(status.complete){
+   const result=status.result||{};
+   if(result.ok===false)throw new Error(result.error||"Request failed.");
+   return result;
+  }
+ }
+ throw new Error("The request was sent, but Apps Script did not confirm it within 30 seconds. Confirm the latest Code.gs has been deployed as a new version.");
+}
 function showView(view){state.view=view;$("#events-view").classList.toggle("hidden",view!=="events");$("#event-detail-view").classList.toggle("hidden",view!=="event-detail");$("#admin-view").classList.toggle("hidden",view!=="admin");$$(".nav-tab").forEach(b=>b.classList.toggle("active",b.dataset.view===(view==="event-detail"?"events":view)));window.scrollTo({top:0,behavior:"smooth"});if(view==="admin")restoreAdmin();if(view==="events")loadPublicEvents();}
 async function loadPublicEvents(){const n=$("#backend-notice");if(!apiReady()){n.classList.remove("hidden");n.textContent=backendHelp;renderPublicEvents([]);return;}n.classList.add("hidden");$("#event-grid").innerHTML='<div class="loading-card"><span class="spinner"></span>Checking for open events…</div>';try{const r=await jsonp("listEvents");state.events=r.events||[];renderPublicEvents(state.events);}catch(e){$("#event-grid").innerHTML='<div class="empty-state"><div class="empty-icon">↯</div><h3>Couldn’t load events</h3><p>'+esc(e.message)+'</p><button class="quiet-button" id="retry-public" type="button">Try again</button></div>';$("#retry-public")?.addEventListener("click",loadPublicEvents);}}
 function renderPublicEvents(events){$("#event-count").textContent=events.length;if(!events.length){$("#event-grid").innerHTML='<div class="empty-state"><div class="empty-icon">✧</div><h3>No open forms just yet</h3><p>There are no published form events right now. Check back later for new sign-ups and announcements.</p></div>';return;}$("#event-grid").innerHTML=events.map(e=>'<article class="event-card"><div class="card-icon">▤</div><h3>'+esc(e.title)+'</h3><p>'+esc(e.description||"Open this event to view the form and submit your response.")+'</p><div class="card-bottom"><span class="question-meta">'+Number(e.questionCount||0)+' question'+(Number(e.questionCount)===1?"":"s")+'</span><button class="text-link open-event" data-id="'+esc(e.id)+'" type="button">Open form ↗</button></div></article>').join("");$$(".open-event").forEach(b=>b.addEventListener("click",()=>openPublicEvent(b.dataset.id)));}

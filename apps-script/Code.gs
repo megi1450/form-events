@@ -12,8 +12,34 @@ function initializeBackend(){
  console.log("Prepared spreadsheet: "+SPREADSHEET_ID);return "Backend initialised. Check the execution log for the first-run admin token.";
 }
 function showAdminTokenForOwner(){const t=PropertiesService.getScriptProperties().getProperty(TOKEN_KEY);if(!t)throw new Error("Run initializeBackend first.");console.log("ADMIN TOKEN (private; do not publish): "+t);}
-function doGet(e){try{const p=e?.parameter||{},a=String(p.action||"listEvents");let out;if(a==="listEvents")out={ok:true,events:listPublicEvents_()};else if(a==="getEvent"){const ev=getEvent_(String(p.id||""));out=ev&&ev.status==="Published"?{ok:true,event:publicEvent_(ev)}:{ok:false,error:"This form is not available."};}else out={ok:false,error:"Unsupported read action."};const json=JSON.stringify(out).replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026"),cb=String(p.callback||"");if(cb&&/^[A-Za-z_$][0-9A-Za-z_$.]*$/.test(cb))return ContentService.createTextOutput(cb+"("+json+");").setMimeType(ContentService.MimeType.JAVASCRIPT);return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON);}catch(err){return ContentService.createTextOutput(JSON.stringify({ok:false,error:String(err.message||err)})).setMimeType(ContentService.MimeType.JSON);}}
-function doPost(e){let requestId="";try{if(!e?.parameter?.payload)throw new Error("Missing payload.");const p=JSON.parse(e.parameter.payload);requestId=String(p.requestId||"");let out;if(p.action==="submit")out=submitResponse_(p);else{requireAdmin_(p.token);if(p.action==="listAdmin")out={ok:true,events:listAdminEvents_()};else if(p.action==="saveEvent")out={ok:true,event:saveEvent_(p.event||{})};else if(p.action==="setStatus")out={ok:true,event:setStatus_(String(p.id||""),String(p.status||""))};else throw new Error("Unsupported action.");}return htmlReply_(requestId,out||{ok:true});}catch(err){return htmlReply_(requestId,{ok:false,error:String(err.message||err)});}}
+function doGet(e){try{const p=e?.parameter||{},a=String(p.action||"listEvents");let out;if(a==="listEvents")out={ok:true,events:listPublicEvents_()};else if(a==="getEvent"){const ev=getEvent_(String(p.id||""));out=ev&&ev.status==="Published"?{ok:true,event:publicEvent_(ev)}:{ok:false,error:"This form is not available."};}else if(a==="getRequestStatus"){const requestId=String(p.requestId||"");const cached=requestId?CacheService.getScriptCache().get("FE_REQ_"+requestId):null;out=cached?{ok:true,complete:true,result:JSON.parse(cached)}:{ok:true,complete:false};}else out={ok:false,error:"Unsupported read action."};const json=JSON.stringify(out).replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026"),cb=String(p.callback||"");if(cb&&/^[A-Za-z_$][0-9A-Za-z_$.]*$/.test(cb))return ContentService.createTextOutput(cb+"("+json+");").setMimeType(ContentService.MimeType.JAVASCRIPT);return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON);}catch(err){return ContentService.createTextOutput(JSON.stringify({ok:false,error:String(err.message||err)})).setMimeType(ContentService.MimeType.JSON);}}
+function doPost(e){
+ let requestId="";
+ let result;
+ try{
+  if(!e?.parameter?.payload)throw new Error("Missing payload.");
+  const p=JSON.parse(e.parameter.payload);
+  requestId=String(p.requestId||"");
+  if(p.action==="submit")result=submitResponse_(p);
+  else{
+   requireAdmin_(p.token);
+   if(p.action==="listAdmin")result={ok:true,events:listAdminEvents_()};
+   else if(p.action==="saveEvent")result={ok:true,event:saveEvent_(p.event||{})};
+   else if(p.action==="setStatus")result={ok:true,event:setStatus_(String(p.id||""),String(p.status||""))};
+   else throw new Error("Unsupported action.");
+  }
+ }catch(err){
+  result={ok:false,error:String(err.message||err)};
+ }
+ result=result||{ok:true};
+ rememberRequest_(requestId,result);
+ return htmlReply_(requestId,result);
+}
+function rememberRequest_(requestId,result){
+ if(!requestId)return;
+ try{CacheService.getScriptCache().put("FE_REQ_"+requestId,JSON.stringify(result||{ok:true}),90);}
+ catch(err){console.error("Could not cache request confirmation: "+String(err.message||err));}
+}
 function htmlReply_(requestId,data){const payload=JSON.stringify({source:"form-events-backend",requestId:String(requestId||""),data:data||{ok:true}}).replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026");return HtmlService.createHtmlOutput('<!doctype html><html><body><script>window.top.postMessage('+payload+',"https://megi1450.github.io");</script></body></html>').setTitle("Form Events response").setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);}
 function requireAdmin_(candidate){const saved=PropertiesService.getScriptProperties().getProperty(TOKEN_KEY);if(!saved||!candidate||!constantTimeEqual_(String(candidate),String(saved)))throw new Error("Admin token is incorrect or backend is not initialised.");}
 function constantTimeEqual_(a,b){if(a.length!==b.length)return false;let d=0;for(let i=0;i<a.length;i++)d|=a.charCodeAt(i)^b.charCodeAt(i);return d===0;}
